@@ -22,21 +22,7 @@ if (NOT SDL2_ttf_FOUND)
     message(FATAL_ERROR "SDL2_ttf not found. Please install SDL2 and its development libraries.")
 endif()
 
-add_library(board src/board.c)
-add_library(unity include/Unity/src/unity.c include/Unity/src/unity.h include/Unity/src/unity_internals.h)
-
 add_executable(${PROJECT_NAME} src/main.c)
-target_link_libraries(board SDL2::Main SDL2::Image SDL2::TTF)
-target_link_libraries(${PROJECT_NAME} SDL2::Main SDL2::Image SDL2::TTF board)
+target_link_libraries(${PROJECT_NAME} SDL2::Main SDL2::Image SDL2::TTF)
 
 file(COPY ${ASSETS_DIR} DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-
-add_executable(board_test tests/board.c)
-target_link_libraries(board_test board unity)
-
-enable_testing()
-
-add_test(
-  NAME board_test
-  COMMAND $<TARGET_FILE:board_test>
-  )
