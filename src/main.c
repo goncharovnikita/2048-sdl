@@ -1,6 +1,10 @@
 #include <SDL.h>
+#include <SDL_blendmode.h>
 #include <SDL_pixels.h>
+#include <SDL_render.h>
+#include <SDL_surface.h>
 #include <SDL_ttf.h>
+#include <arm_neon.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,8 +14,8 @@
 #define BLOCK_TEXT_SIZE 40.0
 #define ROWS_COUNT 4
 #define COLS_COUNT 4
-#define WINDOW_HEIGHT BLOCK_SIZE *ROWS_COUNT + GAP * 2.0 + GAP *(ROWS_COUNT - 1)
-#define WINDOW_WIDTH BLOCK_SIZE *COLS_COUNT + GAP * 2.0 + GAP *(COLS_COUNT - 1)
+#define WINDOW_HEIGHT BLOCK_SIZE *ROWS_COUNT + GAP * 2.0 + GAP * (ROWS_COUNT - 1)
+#define WINDOW_WIDTH BLOCK_SIZE *COLS_COUNT + GAP * 2.0 + GAP * (COLS_COUNT - 1)
 #define BLOCK_SPAWN_ANIMATION_DURATION_MILLIS 200
 
 typedef enum {
@@ -41,17 +45,39 @@ typedef struct {
 } board_cell;
 
 typedef struct {
-  TTF_Font *primary_text_font;
+  SDL_Texture *C_2_texture;
+  SDL_Texture *C_4_texture;
+  SDL_Texture *C_8_texture;
+  SDL_Texture *C_16_texture;
+  SDL_Texture *C_32_texture;
+  SDL_Texture *C_64_texture;
+  SDL_Texture *C_128_texture;
+  SDL_Texture *C_256_texture;
+  SDL_Texture *C_512_texture;
+  SDL_Texture *C_1024_texture;
+  SDL_Texture *C_2048_texture;
+  SDL_Texture *UNKNOWN_texture;
+  SDL_Texture *X_texture;
 } materials;
 
+typedef enum {
+  FR_UNKNOWN,
+  FR_SOLID,
+  FR_BLENDED,
+  FR_SHADED,
+  FR_LCD,
+} font_rendering_mode_type;
+
+font_rendering_mode_type font_rendering_mode = FR_LCD;
+
 board_cell demo_board[ROWS_COUNT * COLS_COUNT] = {
-    {.value = C_2},  {.value = C_4},  {.value = C_8},  {.value = C_16},
+    {.value = C_2},   {.value = C_4},   {.value = C_8},    {.value = C_16},
 
-    {.value = C_4},  {.value = C_8},  {.value = C_16}, {.value = C_32},
+    {.value = C_4},   {.value = C_8},   {.value = C_16},   {.value = C_32},
 
-    {.value = C_8},  {.value = C_16}, {.value = C_32}, {.value = C_64},
+    {.value = C_128}, {.value = C_64},  {.value = C_32},   {.value = C_64},
 
-    {.value = C_16}, {.value = C_32}, {.value = C_64}, {.value = C_128},
+    {.value = C_256}, {.value = C_512}, {.value = C_1024}, {.value = C_2048},
 };
 
 /*
@@ -115,8 +141,28 @@ char *get_board_cell_value_str(board_cell_value v) {
   }
 }
 
+char *get_board_cell_text(board_cell_value v) {
+  switch (v) {
+  case (C_2):
+  case (C_4):
+  case (C_8):
+  case (C_16):
+  case (C_32):
+  case (C_64):
+  case (C_128):
+  case (C_256):
+  case (C_512):
+  case (C_1024):
+  case (C_2048):
+    return get_board_cell_value_str(v);
+  default:
+    return "";
+  }
+}
+
 SDL_Color get_board_cell_color(board_cell_value v) {
-  SDL_Color color = {.r = 238, .g = 228, .b = 218, .a = 35};
+  SDL_Color color = {.r = 238, .g = 228, .b = 218, .a = 60};
+
   switch (v) {
   case (C_2):
     color.r = 238;
@@ -131,19 +177,19 @@ SDL_Color get_board_cell_color(board_cell_value v) {
 
     break;
   case (C_8):
-    color.a = 255;
+    color.r = 255;
     color.g = 177;
     color.b = 121;
 
     break;
   case (C_16):
-    color.a = 245;
+    color.r = 245;
     color.g = 149;
     color.b = 99;
 
     break;
   case (C_32):
-    color.a = 246;
+    color.r = 246;
     color.g = 124;
     color.b = 95;
 
@@ -188,6 +234,8 @@ SDL_Color get_board_cell_color(board_cell_value v) {
     return color;
   }
 
+  color.a = 255;
+
   return color;
 }
 
@@ -215,6 +263,37 @@ board_cell_value get_next_board_cell_value(board_cell_value v) {
     return C_2048;
   default:
     return UNKNOWN;
+  }
+}
+
+SDL_Texture *get_board_text_texture(board_cell_value v, materials *materials) {
+  switch (v) {
+  case (C_2):
+    return materials->C_2_texture;
+  case (C_4):
+    return materials->C_4_texture;
+  case (C_8):
+    return materials->C_8_texture;
+  case (C_16):
+    return materials->C_16_texture;
+  case (C_32):
+    return materials->C_32_texture;
+  case (C_64):
+    return materials->C_64_texture;
+  case (C_128):
+    return materials->C_128_texture;
+  case (C_256):
+    return materials->C_256_texture;
+  case (C_512):
+    return materials->C_512_texture;
+  case (C_1024):
+    return materials->C_1024_texture;
+  case (C_2048):
+    return materials->C_2048_texture;
+  case (UNKNOWN):
+    return materials->UNKNOWN_texture;
+  default:
+    return materials->X_texture;
   }
 }
 
@@ -289,7 +368,7 @@ void debug_print_board() {
 
 /*
  * Movement:
- * Iterating counter-directioin wise from @direction
+ * Iterating counter-direction wise from @direction
  * * Found empty cell:
  * * Use another iterator to find non-empty cell
  * * Move next non-empty cell to current pos, increment iterator by 1
@@ -412,7 +491,6 @@ uint8_t move_board(move_direction direction) {
   return board_updated;
 }
 
-
 void spawn_random_block() {
   board_cell *empty_cells[ROWS_COUNT * COLS_COUNT];
   uint8_t empty_cells_size = 0;
@@ -445,17 +523,41 @@ void spawn_random_block() {
   empty_cells[cell_index]->value = C_2;
 }
 
-void render_text(SDL_Renderer *renderer, TTF_Font *font, SDL_Rect rect,
-                 char *text) {
-  SDL_Color White = {255, 255, 255};
+void fit_rect_at_center(SDL_Rect *target, SDL_Rect *into) {
+  float64_t crop_ratio = 1;
 
-  SDL_Surface *surfaceMessage = TTF_RenderText_Solid(font, text, White);
-  SDL_Texture *Message = SDL_CreateTextureFromSurface(renderer, surfaceMessage);
+  if (target->w > into->w) {
+    crop_ratio = (float64_t)(target->w) / (float64_t)(into->w);
+  } else if (target->h > into->h) {
+    crop_ratio = (float64_t)(target->h) / (float64_t)(into->h);
+  }
 
-  SDL_RenderCopy(renderer, Message, NULL, &rect);
+  target->w *= crop_ratio;
+  target->h *= crop_ratio;
 
-  SDL_FreeSurface(surfaceMessage);
-  SDL_DestroyTexture(Message);
+  if (target->w < into->w) {
+    target->x += (into->w - target->w) / 2;
+  }
+
+  if (target->h < into->h) {
+    target->y += (into->h - target->h) / 2;
+  }
+}
+
+void render_text_texture(SDL_Renderer *renderer, SDL_Texture *message,
+                         SDL_Rect dest_rect) {
+  SDL_Rect texture_rect;
+
+  SDL_QueryTexture(message, NULL, NULL, &texture_rect.w, &texture_rect.h);
+
+  SDL_Rect target_rect = {.x = dest_rect.x,
+                          .y = dest_rect.y,
+                          .w = texture_rect.w,
+                          .h = texture_rect.h};
+
+  fit_rect_at_center(&target_rect, &dest_rect);
+
+  SDL_RenderCopy(renderer, message, NULL, &target_rect);
 }
 
 void render_board(SDL_Renderer *renderer, materials *m) {
@@ -466,23 +568,114 @@ void render_board(SDL_Renderer *renderer, materials *m) {
       if (NULL == cell)
         continue;
 
-      SDL_Rect rect;
-      rect.x = (BLOCK_SIZE * x) + (GAP * (x + 1));
-      rect.y = (BLOCK_SIZE * y) + (GAP * (y + 1));
-      rect.w = BLOCK_SIZE;
-      rect.h = BLOCK_SIZE;
+      SDL_Rect cell_rect;
+      cell_rect.x = (BLOCK_SIZE * x) + (GAP * (x + 1));
+      cell_rect.y = (BLOCK_SIZE * y) + (GAP * (y + 1));
+      cell_rect.w = BLOCK_SIZE;
+      cell_rect.h = BLOCK_SIZE;
 
-      SDL_Color color = get_board_cell_color(cell->value);
+      SDL_Color cell_color = get_board_cell_color(cell->value);
 
-      SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-      SDL_RenderFillRect(renderer, &rect);
+      SDL_SetRenderDrawColor(renderer, cell_color.r, cell_color.g, cell_color.b,
+                             cell_color.a);
+      SDL_RenderFillRect(renderer, &cell_rect);
 
-      if (cell->value != UNKNOWN) {
-        render_text(renderer, m->primary_text_font, rect,
-                    get_board_cell_value_str(cell->value));
+      if (!is_board_cell_empty(*cell)) {
+        render_text_texture(renderer, get_board_text_texture(cell->value, m),
+                            cell_rect);
       }
     }
   }
+}
+
+SDL_Texture *create_cell_texture(SDL_Renderer *renderer, TTF_Font *font,
+                                 board_cell_value cell_value,
+                                 SDL_Color text_color) {
+  SDL_Surface *tmp_surface;
+
+  char *text = get_board_cell_text(cell_value);
+  SDL_Color cell_color = get_board_cell_color(cell_value);
+
+  switch (font_rendering_mode) {
+  case (FR_BLENDED): {
+    tmp_surface = TTF_RenderText_Blended(font, text, text_color);
+
+    break;
+  }
+  case (FR_SHADED): {
+    tmp_surface = TTF_RenderText_Shaded(font, text, text_color, cell_color);
+
+    break;
+  }
+  case (FR_LCD): {
+    tmp_surface = TTF_RenderText_LCD(font, text, text_color, cell_color);
+
+    break;
+  }
+  default: {
+    tmp_surface = TTF_RenderText_Solid(font, text, text_color);
+
+    break;
+  }
+  }
+
+  SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, tmp_surface);
+
+  SDL_FreeSurface(tmp_surface);
+
+  return texture;
+}
+
+materials initialize_materials(SDL_Renderer *renderer, TTF_Font *primary_font) {
+  materials m;
+
+  SDL_Color primary_text_color = {119, 110, 101, 255};
+  SDL_Color inverted_text_color = {255, 255, 255, 255};
+
+  m.C_2_texture =
+      create_cell_texture(renderer, primary_font, C_2, primary_text_color);
+  m.C_4_texture =
+      create_cell_texture(renderer, primary_font, C_4, primary_text_color);
+  m.C_8_texture =
+      create_cell_texture(renderer, primary_font, C_8, inverted_text_color);
+  m.C_16_texture =
+      create_cell_texture(renderer, primary_font, C_16, inverted_text_color);
+  m.C_32_texture =
+      create_cell_texture(renderer, primary_font, C_32, inverted_text_color);
+  m.C_64_texture =
+      create_cell_texture(renderer, primary_font, C_64, inverted_text_color);
+  m.C_128_texture =
+      create_cell_texture(renderer, primary_font, C_128, inverted_text_color);
+  m.C_256_texture =
+      create_cell_texture(renderer, primary_font, C_256, inverted_text_color);
+  m.C_512_texture =
+      create_cell_texture(renderer, primary_font, C_512, inverted_text_color);
+  m.C_1024_texture =
+      create_cell_texture(renderer, primary_font, C_1024, inverted_text_color);
+  m.C_2048_texture =
+      create_cell_texture(renderer, primary_font, C_2048, inverted_text_color);
+  m.UNKNOWN_texture =
+      create_cell_texture(renderer, primary_font, UNKNOWN, primary_text_color);
+  m.X_texture =
+      create_cell_texture(renderer, primary_font, UNKNOWN, primary_text_color);
+
+  return m;
+}
+
+void deinitialize_materials(materials m) {
+  SDL_DestroyTexture(m.C_2_texture);
+  SDL_DestroyTexture(m.C_4_texture);
+  SDL_DestroyTexture(m.C_8_texture);
+  SDL_DestroyTexture(m.C_16_texture);
+  SDL_DestroyTexture(m.C_32_texture);
+  SDL_DestroyTexture(m.C_64_texture);
+  SDL_DestroyTexture(m.C_128_texture);
+  SDL_DestroyTexture(m.C_256_texture);
+  SDL_DestroyTexture(m.C_512_texture);
+  SDL_DestroyTexture(m.C_1024_texture);
+  SDL_DestroyTexture(m.C_2048_texture);
+  SDL_DestroyTexture(m.UNKNOWN_texture);
+  SDL_DestroyTexture(m.X_texture);
 }
 
 int start_sdl_loop() {
@@ -494,6 +687,7 @@ int start_sdl_loop() {
       SDL_CreateWindow("2048", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                        WINDOW_WIDTH, WINDOW_HEIGHT, 0);
   SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, 0);
+  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
   int ttf_inited = TTF_Init();
 
@@ -503,16 +697,17 @@ int start_sdl_loop() {
     return ttf_inited;
   }
 
-  TTF_Font *font = TTF_OpenFont("assets/Roboto-Bold.ttf", 24);
+  TTF_Font *font = TTF_OpenFont("assets/Roboto-Bold.ttf", 30);
 
-  materials m;
+  materials materials = initialize_materials(renderer, font);
 
-  m.primary_text_font = font;
+  SDL_Color clear_color = {187, 173, 160, 255};
 
-  SDL_SetRenderDrawColor(renderer, 187, 173, 160, 255);
+  SDL_SetRenderDrawColor(renderer, clear_color.r, clear_color.g, clear_color.b,
+                         clear_color.a);
   SDL_RenderClear(renderer);
 
-  render_board(renderer, &m);
+  render_board(renderer, &materials);
 
   SDL_RenderPresent(renderer);
 
@@ -567,19 +762,23 @@ int start_sdl_loop() {
     if (!board_updated)
       continue;
 
-    SDL_SetRenderDrawColor(renderer, 187, 173, 160, 255);
+    SDL_SetRenderDrawColor(renderer, clear_color.r, clear_color.g,
+                           clear_color.b, clear_color.a);
     SDL_RenderClear(renderer);
 
     spawn_random_block();
-    render_board(renderer, &m);
+    render_board(renderer, &materials);
 
     SDL_RenderPresent(renderer);
 
     board_updated = 0;
   }
 
+  deinitialize_materials(materials);
+
   SDL_DestroyRenderer(renderer);
   SDL_DestroyWindow(window);
+  TTF_CloseFont(font);
   SDL_Quit();
 
   return 0;
